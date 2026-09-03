@@ -1,0 +1,12 @@
+{
+  "users": {},
+  "admins": [],
+  "resellers": [],
+  "bannedUsers": [],
+  "maintenance": false,
+  "credits": {},
+  "stats": {
+    "success": 0,
+    "failed": 0
+  }
+}
