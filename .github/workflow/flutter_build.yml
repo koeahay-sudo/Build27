@@ -1,0 +1,90 @@
+name: Flutter Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'URL ZIP project Flutter (dari GitHub Release)'
+        required: true
+        type: string
+      build_type:
+        description: 'Tipe build'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+      tag_name:
+        description: 'Tag release untuk output APK'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Download ZIP Project
+        run: |
+          mkdir -p project
+          curl -L "${{ github.event.inputs.zip_url }}" -o project.zip
+          unzip -q project.zip -d project_raw
+          # Support ZIP dengan subfolder atau langsung isi
+          INNER=$(ls project_raw/)
+          COUNT=$(ls project_raw/ | wc -l)
+          if [ "$COUNT" -eq 1 ] && [ -d "project_raw/$INNER" ]; then
+            mv "project_raw/$INNER"/* project/
+          else
+            mv project_raw/* project/
+          fi
+          ls project/
+
+      - name: ☕ Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 🐦 Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 'any'
+          channel: 'stable'
+          cache: true
+
+      - name: 📦 Flutter pub get
+        working-directory: project
+        run: flutter pub get
+
+      - name: 🔐 Grant gradle execute permission
+        working-directory: project
+        run: |
+          if [ -f android/gradlew ]; then
+            chmod +x android/gradlew
+          fi
+
+      - name: 🔨 Build APK
+        working-directory: project
+        run: |
+          if [ "${{ github.event.inputs.build_type }}" = "release" ]; then
+            flutter build apk --release --no-shrink
+          else
+            flutter build apk --debug
+          fi
+
+      - name: 📂 Temukan APK hasil build
+        id: find_apk
+        run: |
+          APK_PATH=$(find project/build -name "*.apk" | head -1)
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "Found APK: $APK_PATH"
+
+      - name: 📤 Upload APK sebagai Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ github.event.inputs.build_type }}-${{ github.event.inputs.tag_name }}
+          path: ${{ steps.find_apk.outputs.APK_PATH }}
+          retention-days: 1
+          if-no-files-found: error
