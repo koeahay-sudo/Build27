@@ -1,0 +1,152 @@
+name: Web2APK Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'URL ZIP project (dari GitHub Release)'
+        required: true
+        type: string
+      build_type:
+        description: 'Tipe build'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+      tag_name:
+        description: 'Tag unik untuk job ini'
+        required: true
+        type: string
+      project_name:
+        description: 'Nama project (opsional, untuk label artifact)'
+        required: false
+        default: 'flutter_app'
+        type: string
+
+env:
+  FLUTTER_VERSION: 'stable'
+
+jobs:
+  build-apk:
+    name: 🔨 Build APK (${{ github.event.inputs.build_type }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: 🖥️ System Info
+        run: |
+          echo "Runner  : $(uname -a)"
+          echo "CPU     : $(nproc) cores"
+          echo "RAM     : $(free -h | awk '/Mem/{print $2}')"
+          echo "Disk    : $(df -h / | awk 'NR==2{print $4}') free"
+          echo "Tag     : ${{ github.event.inputs.tag_name }}"
+          echo "Mode    : ${{ github.event.inputs.build_type }}"
+
+      - name: 📥 Download & Ekstrak ZIP Project
+        run: |
+          echo "🔗 Downloading from: ${{ github.event.inputs.zip_url }}"
+          curl -L --retry 3 --retry-delay 5 \
+            "${{ github.event.inputs.zip_url }}" \
+            -o source.zip
+          echo "📦 ZIP Size: $(du -sh source.zip | cut -f1)"
+          mkdir -p project_raw project
+          unzip -q source.zip -d project_raw
+          # Flatten satu level subfolder kalau ada
+          TOP=$(ls project_raw/)
+          COUNT=$(ls project_raw/ | wc -l)
+          if [ "$COUNT" -eq 1 ] && [ -d "project_raw/$TOP" ]; then
+            cp -r "project_raw/$TOP"/. project/
+          else
+            cp -r project_raw/. project/
+          fi
+          echo "📁 Project structure:"
+          ls -la project/
+
+      - name: ✅ Validasi Flutter Project
+        run: |
+          if [ ! -f "project/pubspec.yaml" ]; then
+            echo "❌ ERROR: pubspec.yaml tidak ditemukan!"
+            echo "Pastikan ZIP berisi project Flutter yang valid."
+            exit 1
+          fi
+          echo "✅ pubspec.yaml ditemukan"
+          if [ -f "project/android/gradlew" ]; then
+            echo "✅ gradlew ditemukan"
+          else
+            echo "⚠️ gradlew tidak ditemukan, Flutter akan generate otomatis"
+          fi
+
+      - name: ☕ Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 🐦 Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 'any'
+          channel: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: 🔍 Flutter Doctor
+        run: flutter doctor --android-licenses < /dev/null || true
+
+      - name: 📦 Flutter Pub Get
+        working-directory: project
+        run: flutter pub get
+
+      - name: 🔐 Setup Gradle Permission
+        working-directory: project
+        run: |
+          if [ -f android/gradlew ]; then
+            chmod +x android/gradlew
+          fi
+
+      - name: 🔨 Build APK ${{ github.event.inputs.build_type }}
+        working-directory: project
+        run: |
+          if [ "${{ github.event.inputs.build_type }}" = "release" ]; then
+            flutter build apk --release \
+              --no-shrink \
+              --split-per-abi=false \
+              --dart-define=FLUTTER_WEB_USE_SKIA=true
+          else
+            flutter build apk --debug
+          fi
+
+      - name: 📂 Cari & Rename APK
+        id: apk_info
+        run: |
+          APK_RAW=$(find project/build -name "*.apk" | grep -v "intermediates" | head -1)
+          if [ -z "$APK_RAW" ]; then
+            echo "❌ APK tidak ditemukan setelah build!"
+            exit 1
+          fi
+          PROJECT_SAFE=$(echo "${{ github.event.inputs.project_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_-')
+          APK_FINAL="${PROJECT_SAFE}_${{ github.event.inputs.build_type }}.apk"
+          cp "$APK_RAW" "$APK_FINAL"
+          APK_SIZE=$(du -sh "$APK_FINAL" | cut -f1)
+          echo "APK_PATH=$APK_FINAL" >> $GITHUB_OUTPUT
+          echo "APK_SIZE=$APK_SIZE"  >> $GITHUB_OUTPUT
+          echo "✅ APK: $APK_FINAL ($APK_SIZE)"
+
+      - name: 📤 Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-output-${{ github.event.inputs.tag_name }}
+          path: ${{ steps.apk_info.outputs.APK_PATH }}
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: 📊 Build Summary
+        run: |
+          echo "## ✅ Build Selesai" >> $GITHUB_STEP_SUMMARY
+          echo "| Key | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Mode | ${{ github.event.inputs.build_type }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | ${{ github.event.inputs.tag_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| APK | ${{ steps.apk_info.outputs.APK_PATH }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Size | ${{ steps.apk_info.outputs.APK_SIZE }} |" >> $GITHUB_STEP_SUMMARY
